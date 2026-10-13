@@ -1,0 +1,48 @@
+@import "tailwindcss";
+
+:root {
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  
+  --tg-safe-top: var(--tg-content-safe-area-inset-top, var(--tg-safe-area-inset-top, env(safe-area-inset-top, 0px)));
+  --tg-safe-bottom: var(--tg-content-safe-area-inset-bottom, var(--tg-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)));
+  
+  --tg-bg: var(--tg-theme-bg-color, #0f1117);
+  --tg-text: var(--tg-theme-text-color, #f1f5f9);
+  --tg-hint: var(--tg-theme-hint-color, #94a3b8);
+  --tg-link: var(--tg-theme-link-color, #38bdf8);
+  --tg-button: var(--tg-theme-button-color, #2563eb);
+  --tg-button-text: var(--tg-theme-button-text-color, #ffffff);
+  --tg-secondary-bg: var(--tg-theme-secondary-bg-color, #181c27);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--tg-bg);
+  color: var(--tg-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  min-height: 100vh;
+}
+
+/* Telegram safe area padding helper */
+.safe-area-padding {
+  padding-top: max(var(--tg-safe-top), 12px);
+  padding-bottom: max(var(--tg-safe-bottom), 16px);
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.2);
+  border-radius: 9999px;
+}
