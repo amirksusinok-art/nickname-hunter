@@ -57,12 +57,26 @@ DATABASE_URL для подключения:
 
 ### 4. Тестирование и проверка типов
 ```bash
-# Запуск тестов Vitest (24 теста серверной логики и API):
+# Запуск тестов Vitest (43 теста игровой экономики, формул, торга и concurrency):
 npm test
 
-# Полная проверка типов TypeScript:
+# Полная проверка типов TypeScript (server + client):
 npm run typecheck
 
 # Сборка продакшн бандлов:
 npm run build
 ```
+
+## Подключение к Telegram (@BotFather)
+
+1. Откройте [@BotFather](https://t.me/BotFather) в Telegram.
+2. Создайте нового бота (`/newbot`) или выберите существующего (`/mybots`).
+3. Настройте Mini App кнопку:
+   - В меню бота выберите **Bot Settings** → **Menu Button** → **Configure menu button**.
+   - Укажите URL: `https://nickname-hunter.onrender.com`.
+   - Либо используйте `/newapp` для создания прямой ссылки на Mini App (например, `t.me/YourBot/app`).
+4. В панели [Render Dashboard](https://dashboard.render.com/) в настройках сервиса `nickdrop`:
+   - Перейдите в раздел **Environment**.
+   - Добавьте или обновите переменную `TELEGRAM_BOT_TOKEN` со значением токена от BotFather.
+   - Сервис автоматически перезапустится и включит криптографическую проверку HMAC-SHA256 для пользователей Telegram.
+
