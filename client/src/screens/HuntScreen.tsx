@@ -43,63 +43,70 @@ export const HuntScreen: React.FC<HuntScreenProps> = ({
     return `Счетчик Pity: ${pityCounter}/100 (Epic+ 7.0%)`;
   };
 
+  const REEL_POOL = [
+    'kai', 'zen', 'sky', 'neo', 'void', 'zero', 'flux', 'ziv', '777', 'nox',
+    'apex', 'echo', 'pure', 'v1p', 'xox', 'luna', 'aura', 'mars', 'arc', 'fox',
+    'lux', 'ai', 'dusk', 'cyber', 'frost', 'ghost', 'pulse', 'blade', 'sol', 'raw'
+  ];
+
   const handleRoll = async () => {
     if (!isAffordable || isRolling) return;
 
     setErrorMsg(null);
     setIsRolling(true);
+    setDroppedItem(null);
     haptic.impact('medium');
-
-    // Reel simulation if not reduced motion
-    const dummyWords = ['apex', 'shadow', '777', 'v1p', 'matrix', 'zero', 'neo', 'echo', 'frost'];
-    let interval: any = null;
-
-    if (!reducedMotion) {
-      let step = 0;
-      interval = setInterval(() => {
-        setReelText(dummyWords[step % dummyWords.length]);
-        step++;
-      }, 70);
-    }
 
     try {
       const idempotencyKey = `roll_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-      const result = await api.rollDrop(idempotencyKey);
+      // Fetch drop result from server
+      const rollPromise = api.rollDrop(idempotencyKey);
 
-      // Wait a moment for roll feel if animations enabled
+      // Kinetic deceleration animation if animations enabled
       if (!reducedMotion) {
-        await new Promise((r) => setTimeout(r, 800));
-        clearInterval(interval);
+        // Step delays gradually increasing to create realistic slot machine deceleration
+        const stepDelays = [45, 45, 50, 55, 65, 80, 105, 135, 175, 230, 300, 420];
+        for (let i = 0; i < stepDelays.length; i++) {
+          const randomPreview = REEL_POOL[Math.floor(Math.random() * REEL_POOL.length)];
+          setReelText(randomPreview);
+          // Mechanical wheel tick feel in user's hand
+          haptic.selection();
+          await new Promise((r) => setTimeout(r, stepDelays[i]));
+        }
       }
+
+      const result = await rollPromise;
 
       setDroppedItem(result.item);
       setScoreBreakdown(result.scoreBreakdown);
       onBalanceChange(result.newBalance);
       onPityChange(result.newPityCounter);
 
-      // Haptics & celebration
+      // Haptics & celebration on reveal
       const rarity = result.item.rarity.toUpperCase();
       if (['MYTHIC', 'LEGENDARY'].includes(rarity)) {
         haptic.impact('heavy');
         confetti({
-          particleCount: 80,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: rarity === 'MYTHIC' ? ['#f43f5e', '#fb7185', '#fda4af'] : ['#fbbf24', '#f59e0b', '#d97706'],
+          particleCount: 90,
+          spread: 80,
+          origin: { y: 0.55 },
+          colors:
+            rarity === 'MYTHIC'
+              ? ['#f43f5e', '#fb7185', '#fda4af', '#ffffff']
+              : ['#fbbf24', '#f59e0b', '#d97706', '#fef08a'],
         });
       } else if (rarity === 'EPIC') {
         haptic.impact('medium');
         confetti({
-          particleCount: 40,
-          spread: 50,
-          origin: { y: 0.6 },
-          colors: ['#c084fc', '#a855f7'],
+          particleCount: 50,
+          spread: 60,
+          origin: { y: 0.55 },
+          colors: ['#c084fc', '#a855f7', '#e9d5ff'],
         });
       } else {
         haptic.impact('medium');
       }
     } catch (err: any) {
-      if (interval) clearInterval(interval);
       setErrorMsg(err.message || 'Ошибка выбивания ника');
       haptic.notification('error');
     } finally {

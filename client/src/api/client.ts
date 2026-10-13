@@ -189,6 +189,21 @@ export const api = {
       body: JSON.stringify({ dealId }),
     }),
 
+  bulkSell: (itemIds: string[]) =>
+    request<{
+      success: boolean;
+      soldCount: number;
+      baseTotal: number;
+      bonusPercent: number;
+      bonusAmount: number;
+      finalTotal: number;
+      newBalance: number;
+      message: string;
+    }>('/avita/bulk-sell', {
+      method: 'POST',
+      body: JSON.stringify({ itemIds }),
+    }),
+
   getLeaderboard: () =>
     request<{
       leaderboard: LeaderboardEntry[];

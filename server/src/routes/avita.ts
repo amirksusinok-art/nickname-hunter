@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { getDb, schema } from '../db/index.js';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, inArray } from 'drizzle-orm';
 import { authenticateTMA } from '../auth/tma-auth.js';
 import {
   calculateInitialPrice,
@@ -436,5 +436,121 @@ export async function avitaRoutes(fastify: FastifyInstance) {
       .where(and(eq(schema.avitaDeals.id, dealId), eq(schema.avitaDeals.user_id, user.id)));
 
     return reply.send({ success: true, message: 'Сделка отменена. Никнейм остался у вас.' });
+  });
+
+  // Bulk sell items to Avita (Select All / Sell All)
+  fastify.post('/bulk-sell', async (request, reply) => {
+    const user = request.user!;
+    const { itemIds } = request.body as { itemIds: string[] };
+
+    if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0) {
+      return reply.status(400).send({ error: 'Не выбраны предметы для оптовой продажи' });
+    }
+
+    const db = getDb();
+
+    return await db.transaction(async (tx: any) => {
+      // Lock user
+      const userRecords = await tx
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.id, user.id))
+        .for('update');
+
+      if (!userRecords[0]) {
+        return reply.status(404).send({ error: 'Пользователь не найден' });
+      }
+
+      // Lock showcase
+      const showcase = await tx
+        .select()
+        .from(schema.leaderboardShowcases)
+        .where(eq(schema.leaderboardShowcases.user_id, user.id));
+      const showcaseItemId = showcase[0]?.item_id;
+
+      // Lock items
+      const items = await tx
+        .select()
+        .from(schema.nicknameItems)
+        .where(
+          and(
+            inArray(schema.nicknameItems.id, itemIds),
+            eq(schema.nicknameItems.owner_id, user.id)
+          )
+        )
+        .for('update');
+
+      if (items.length === 0) {
+        return reply.status(400).send({ error: 'Выбранные предметы не найдены или уже проданы' });
+      }
+
+      // Filter out favorites and showcased items
+      const eligibleItems = items.filter(
+        (it: any) => !it.is_favorite && !it.is_locked && it.id !== showcaseItemId
+      );
+
+      if (eligibleItems.length === 0) {
+        return reply.status(400).send({
+          error: 'Все выбранные предметы защищены от продажи (в избранном или на витрине)'
+        });
+      }
+
+      // Calculate total price using Avita pricing formula
+      let baseTotal = 0;
+      for (const it of eligibleItems) {
+        const traitsCount = it.traits ? it.traits.length : 0;
+        const price = calculateInitialPrice(it.rarity, it.score, traitsCount);
+        baseTotal += price;
+      }
+
+      // Bulk bonus: 5+ items -> +5%, 10+ items -> +10%
+      let bonusPercent = 0;
+      if (eligibleItems.length >= 10) {
+        bonusPercent = 10;
+      } else if (eligibleItems.length >= 5) {
+        bonusPercent = 5;
+      }
+
+      const bonusAmount = Math.round(baseTotal * (bonusPercent / 100));
+      const finalTotal = baseTotal + bonusAmount;
+
+      const currentBalance = Number(userRecords[0].balance_ud);
+      const newBalance = currentBalance + finalTotal;
+
+      // Disown sold items
+      const eligibleIds = eligibleItems.map((it: any) => it.id);
+      await tx
+        .update(schema.nicknameItems)
+        .set({ owner_id: null })
+        .where(inArray(schema.nicknameItems.id, eligibleIds));
+
+      // Credit balance
+      await tx
+        .update(schema.users)
+        .set({ balance_ud: newBalance, updated_at: new Date() })
+        .where(eq(schema.users.id, user.id));
+
+      // Log wallet transaction
+      await tx.insert(schema.walletTransactions).values({
+        user_id: user.id,
+        amount: finalTotal,
+        balance_after: newBalance,
+        reason: `AVITA_BULK_SALE_${eligibleItems.length}`,
+      });
+
+      return reply.send({
+        success: true,
+        soldCount: eligibleItems.length,
+        baseTotal,
+        bonusPercent,
+        bonusAmount,
+        finalTotal,
+        newBalance,
+        message:
+          bonusPercent > 0
+            ? `Оптовая партия из ${eligibleItems.length} ников принята! Накинул ${bonusPercent}% за объём (+${bonusAmount} UD). Итого: +${finalTotal} UD.`
+            : `Партия из ${eligibleItems.length} ников продана! Начислено +${finalTotal} UD.`,
+      });
+    });
   });
 }
