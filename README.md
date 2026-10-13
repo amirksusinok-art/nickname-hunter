@@ -2,6 +2,10 @@
 
 Nickname Hunter — Telegram Mini App (TMA) для охоты за уникальными никнеймами, торговли со скупщиком Авитой, сбора коллекции и соревнований в витринном лидерборде.
 
+- **GitHub репозиторий:** [https://github.com/amirksusinok-art/nickname-hunter](https://github.com/amirksusinok-art/nickname-hunter)
+- **Live приложение на Render:** [https://nickname-hunter.onrender.com](https://nickname-hunter.onrender.com)
+- **База данных:** Render Managed PostgreSQL 16 (`nickdrop-db`)
+
 ## Стек технологий
 
 - **Backend:** Node.js 22+, TypeScript, Fastify 5, Drizzle ORM, PostgreSQL 16 (с поддержкой PGlite для локального запуска без Docker и тестов), криптографическая авторизация TMA HMAC-SHA256.
