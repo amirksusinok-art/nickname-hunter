@@ -54,6 +54,7 @@ export const avitaDeals = pgTable('avita_deals', {
   requested_price: integer('requested_price'),
   final_price: integer('final_price'),
   status: varchar('status', { length: 16 }).notNull(), // 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'CANCELLED'
+  attempt_count: integer('attempt_count').default(0).notNull(),
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   closed_at: timestamp('closed_at', { withTimezone: true }),
 });

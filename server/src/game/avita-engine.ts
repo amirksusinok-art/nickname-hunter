@@ -9,7 +9,7 @@ export const BASE_PRICES: Record<RarityTier, number> = {
   MYTHIC: 12000,
 };
 
-export type BargainAction = 'ACCEPT' | 'PLUS_10' | 'PLUS_125' | 'PLUS_50';
+export type BargainAction = 'ACCEPT' | 'PLUS_10' | 'PLUS_125' | 'PLUS_50' | 'CUSTOM';
 
 export function calculateInitialPrice(
   rarity: string,
@@ -26,24 +26,58 @@ export function calculateInitialPrice(
   return Math.round(B * multiplier);
 }
 
-export function calculateDelta(initialPrice: number, action: BargainAction): number {
+export function calculateDelta(
+  basePrice: number,
+  action: BargainAction,
+  customPrice?: number
+): number {
   switch (action) {
     case 'PLUS_10':
-      return Math.round(0.10 * initialPrice);
+      return Math.round(0.10 * basePrice);
     case 'PLUS_125':
       return 125;
     case 'PLUS_50':
-      return Math.round(0.50 * initialPrice);
+      return Math.round(0.50 * basePrice);
+    case 'CUSTOM':
+      return customPrice !== undefined ? Math.max(0, customPrice - basePrice) : 0;
     case 'ACCEPT':
     default:
       return 0;
   }
 }
 
-export function calculateAcceptanceProbability(initialPrice: number, delta: number): number {
-  if (initialPrice <= 0) return 0.05;
-  const rawProb = 0.90 - 1.00 * (delta / initialPrice);
-  return Math.min(0.85, Math.max(0.05, rawProb));
+export function calculateAcceptanceProbability(
+  basePrice: number,
+  delta: number,
+  k: number = 1
+): number {
+  if (basePrice <= 0) return 0.02;
+  const r = delta / basePrice;
+  // P_accept = clamp(0.90 - 1.10 * r - 0.10 * (k - 1), 0.02, 0.85)
+  const rawProb = 0.90 - 1.10 * r - 0.10 * (k - 1);
+  return Math.min(0.85, Math.max(0.02, rawProb));
+}
+
+export function calculateCounterProbability(
+  basePrice: number,
+  delta: number,
+  k: number = 1
+): number {
+  if (basePrice <= 0) return 0.10;
+  const r = delta / basePrice;
+  // P_counter_chance = clamp(0.75 - 0.50 * r - 0.15 * (k - 1), 0.10, 0.75)
+  const rawProb = 0.75 - 0.50 * r - 0.15 * (k - 1);
+  return Math.min(0.75, Math.max(0.10, rawProb));
+}
+
+export function calculateCounterPrice(
+  basePrice: number,
+  delta: number,
+  k: number = 1
+): number {
+  // P_counter = round( P_base + delta * 0.35 * (1 - (k - 1) / 3) )
+  const factor = 0.35 * (1 - (k - 1) / 3);
+  return Math.round(basePrice + delta * factor);
 }
 
 export interface BargainResult {
@@ -53,64 +87,152 @@ export interface BargainResult {
   finalPrice: number;
   isAccepted: boolean;
   isCompromise: boolean;
+  isOutrage: boolean;
+  attemptCount: number;
   message: string;
 }
 
+export interface EvaluateBargainOptions {
+  k?: number;
+  customPrice?: number;
+  randomFloat?: number;
+  counterFloat?: number;
+}
+
 export function evaluateBargain(
-  initialPrice: number,
+  basePrice: number,
   action: BargainAction,
-  randomFloat: number = Math.random(),
-  rejectionFloat: number = Math.random()
+  optionsOrK?: number | EvaluateBargainOptions,
+  customPriceOrRandomFloat?: number,
+  randomFloatArg?: number,
+  counterFloatArg?: number
 ): BargainResult {
+  let k = 1;
+  let customPrice: number | undefined;
+  let randomFloat = Math.random();
+  let counterFloat = Math.random();
+
+  if (typeof optionsOrK === 'object' && optionsOrK !== null) {
+    if (optionsOrK.k !== undefined) k = optionsOrK.k;
+    if (optionsOrK.customPrice !== undefined) customPrice = optionsOrK.customPrice;
+    if (optionsOrK.randomFloat !== undefined) randomFloat = optionsOrK.randomFloat;
+    if (optionsOrK.counterFloat !== undefined) counterFloat = optionsOrK.counterFloat;
+  } else if (typeof optionsOrK === 'number') {
+    if (optionsOrK < 1) {
+      // Legacy signature: (basePrice, action, randomFloat, rejectionFloat)
+      randomFloat = optionsOrK;
+      if (typeof customPriceOrRandomFloat === 'number') {
+        counterFloat = customPriceOrRandomFloat;
+      }
+      k = 1;
+    } else {
+      k = Math.max(1, Math.floor(optionsOrK));
+      if (action === 'CUSTOM') {
+        if (typeof customPriceOrRandomFloat === 'number') customPrice = customPriceOrRandomFloat;
+        if (typeof randomFloatArg === 'number') randomFloat = randomFloatArg;
+        if (typeof counterFloatArg === 'number') counterFloat = counterFloatArg;
+      } else {
+        if (typeof customPriceOrRandomFloat === 'number') randomFloat = customPriceOrRandomFloat;
+        if (typeof randomFloatArg === 'number') counterFloat = randomFloatArg;
+      }
+    }
+  }
+
   if (action === 'ACCEPT') {
     return {
       action,
-      initialPrice,
-      requestedPrice: initialPrice,
-      finalPrice: initialPrice,
+      initialPrice: basePrice,
+      requestedPrice: basePrice,
+      finalPrice: basePrice,
       isAccepted: true,
       isCompromise: false,
+      isOutrage: false,
+      attemptCount: k,
       message: 'По рукам! Отличная сделка.',
     };
   }
 
-  const delta = calculateDelta(initialPrice, action);
-  const requestedPrice = initialPrice + delta;
-  const prob = calculateAcceptanceProbability(initialPrice, delta);
-
-  if (randomFloat <= prob) {
+  if (action === 'CUSTOM' && customPrice !== undefined && customPrice <= basePrice) {
     return {
       action,
-      initialPrice,
-      requestedPrice,
-      finalPrice: requestedPrice,
+      initialPrice: basePrice,
+      requestedPrice: customPrice,
+      finalPrice: basePrice,
+      isAccepted: false,
+      isCompromise: false,
+      isOutrage: false,
+      attemptCount: k,
+      message: `Ты просишь ${customPrice} UD, хотя я уже предлагаю ${basePrice} UD! Назови цену выше текущей.`,
+    };
+  }
+
+  const delta = calculateDelta(basePrice, action, customPrice);
+  const targetPrice = customPrice !== undefined && action === 'CUSTOM' ? customPrice : basePrice + delta;
+
+  // 1. Check Outrage: targetPrice > 2.5 * P_base
+  if (targetPrice > 2.5 * basePrice) {
+    return {
+      action,
+      initialPrice: basePrice,
+      requestedPrice: targetPrice,
+      finalPrice: basePrice,
+      isAccepted: false,
+      isCompromise: false,
+      isOutrage: true,
+      attemptCount: k,
+      message: 'Ты надо мной издеваешься?! Назови нормальную цену!',
+    };
+  }
+
+  // 2. Acceptance check: P_accept
+  const acceptProb = calculateAcceptanceProbability(basePrice, delta, k);
+  if (randomFloat <= acceptProb) {
+    return {
+      action,
+      initialPrice: basePrice,
+      requestedPrice: targetPrice,
+      finalPrice: targetPrice,
       isAccepted: true,
       isCompromise: false,
+      isOutrage: false,
+      attemptCount: k,
       message: 'Ладно, уговорил! Забираю по твоей цене.',
     };
   }
 
-  // Rejected: 60% initial price, 40% compromise price
-  if (rejectionFloat < 0.40) {
-    const compPrice = Math.round(initialPrice + 0.40 * delta);
+  // 3. Counter-offer check: P_counter
+  const counterProb = calculateCounterProbability(basePrice, delta, k);
+  if (counterFloat <= counterProb) {
+    const counterPrice = calculateCounterPrice(basePrice, delta, k);
     return {
       action,
-      initialPrice,
-      requestedPrice,
-      finalPrice: compPrice,
+      initialPrice: basePrice,
+      requestedPrice: targetPrice,
+      finalPrice: counterPrice,
       isAccepted: false,
       isCompromise: true,
-      message: `Столько не дам. Вот мое последнее слово: ${compPrice} UD.`,
+      isOutrage: false,
+      attemptCount: k,
+      message:
+        k >= 3
+          ? `Это моё последнее слово: ${counterPrice} UD. Либо берёшь, либо уходи.`
+          : `Столько не дам. Вот мое встречное предложение: ${counterPrice} UD.`,
     };
   }
 
+  // 4. Flat rejection
   return {
     action,
-    initialPrice,
-    requestedPrice,
-    finalPrice: initialPrice,
+    initialPrice: basePrice,
+    requestedPrice: targetPrice,
+    finalPrice: basePrice,
     isAccepted: false,
     isCompromise: false,
-    message: `Нет уж, ни монетой больше. Только ${initialPrice} UD.`,
+    isOutrage: false,
+    attemptCount: k,
+    message:
+      k >= 3
+        ? `Всё, хватит базарить. Ни монетой больше: ${basePrice} UD. Либо забираешь, либо свободен.`
+        : `Нет уж, ни монетой больше. Только ${basePrice} UD.`,
   };
 }

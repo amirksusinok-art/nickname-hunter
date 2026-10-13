@@ -38,11 +38,24 @@ export async function avitaRoutes(fastify: FastifyInstance) {
     }
 
     const { deal, item } = activeDeals[0];
+    const currentPrice = deal.final_price || deal.initial_price;
+    const canBargain = (deal.attempt_count ?? 0) < 3;
     return reply.send({
       activeDeal: {
         ...deal,
         item,
-        canBargain: deal.action_type === null,
+        canBargain,
+        attemptCount: deal.attempt_count ?? 0,
+        maxAttempts: 3,
+        currentPrice,
+        options: canBargain
+          ? [
+              { action: 'ACCEPT', label: `Продать за ${currentPrice} UD`, delta: 0, price: currentPrice },
+              { action: 'PLUS_10', label: `Торговаться (+10%)`, delta: Math.round(0.10 * currentPrice), price: currentPrice + Math.round(0.10 * currentPrice) },
+              { action: 'PLUS_125', label: `Торговаться (+125 UD)`, delta: 125, price: currentPrice + 125 },
+              { action: 'PLUS_50', label: `Наглеть (+50%)`, delta: Math.round(0.50 * currentPrice), price: currentPrice + Math.round(0.50 * currentPrice) },
+            ]
+          : [],
       },
     });
   });
@@ -110,6 +123,7 @@ export async function avitaRoutes(fastify: FastifyInstance) {
         user_id: user.id,
         item_id: item.id,
         initial_price: initialPrice,
+        attempt_count: 0,
         status: 'PENDING',
       })
       .returning();
@@ -119,11 +133,14 @@ export async function avitaRoutes(fastify: FastifyInstance) {
         ...deal,
         item,
         canBargain: true,
+        attemptCount: 0,
+        maxAttempts: 3,
+        currentPrice: initialPrice,
         options: [
-          { action: 'ACCEPT', label: `Продать за ${initialPrice} UD`, delta: 0 },
-          { action: 'PLUS_10', label: `Торговаться (+10%)`, delta: calculateDelta(initialPrice, 'PLUS_10') },
-          { action: 'PLUS_125', label: `Торговаться (+125 UD)`, delta: 125 },
-          { action: 'PLUS_50', label: `Наглеть (+50%)`, delta: calculateDelta(initialPrice, 'PLUS_50') },
+          { action: 'ACCEPT', label: `Продать за ${initialPrice} UD`, delta: 0, price: initialPrice },
+          { action: 'PLUS_10', label: `Торговаться (+10%)`, delta: Math.round(0.10 * initialPrice), price: initialPrice + Math.round(0.10 * initialPrice) },
+          { action: 'PLUS_125', label: `Торговаться (+125 UD)`, delta: 125, price: initialPrice + 125 },
+          { action: 'PLUS_50', label: `Наглеть (+50%)`, delta: Math.round(0.50 * initialPrice), price: initialPrice + Math.round(0.50 * initialPrice) },
         ],
       },
     });
@@ -132,9 +149,10 @@ export async function avitaRoutes(fastify: FastifyInstance) {
   // Negotiate deal
   fastify.post('/negotiate', async (request, reply) => {
     const user = request.user!;
-    const { dealId, action } = request.body as {
+    const { dealId, action, customPrice } = request.body as {
       dealId: string;
       action: BargainAction;
+      customPrice?: number;
     };
     const db = getDb();
 
@@ -166,10 +184,10 @@ export async function avitaRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // Rule: once bargaining option chosen, cannot bargain again
-      if (deal.action_type !== null && action !== 'ACCEPT') {
+      // Rule: maximum 3 bargaining attempts per deal
+      if (deal.attempt_count >= 3 && action !== 'ACCEPT') {
         return reply.status(400).send({
-          error: 'Повторный торг в рамках одной сделки запрещен правилами Авиты',
+          error: 'Лимит попыток торга исчерпан (максимум 3 раунда). Доступно только принятие предложения или отмена.',
         });
       }
 
@@ -249,14 +267,71 @@ export async function avitaRoutes(fastify: FastifyInstance) {
           newBalance,
           message: 'По рукам! Отличная сделка.',
           soldItem: currentItem,
+          attemptCount: deal.attempt_count,
+          maxAttempts: 3,
         });
       }
 
       // Evaluate bargain attempt
-      const evaluation = evaluateBargain(deal.initial_price, action);
+      const P_base = deal.final_price || deal.initial_price;
+      const k = deal.attempt_count + 1;
+
+      let targetPrice: number;
+      if (action === 'CUSTOM') {
+        if (
+          customPrice === undefined ||
+          customPrice === null ||
+          typeof customPrice !== 'number' ||
+          !Number.isFinite(customPrice) ||
+          isNaN(customPrice) ||
+          customPrice <= P_base ||
+          customPrice > 1_000_000_000
+        ) {
+          return reply.status(400).send({
+            error: `Предложенная цена должна быть числом больше текущей (${P_base} UD) и не более 1 000 000 000 UD`,
+          });
+        }
+        targetPrice = Math.round(customPrice);
+      } else if (action === 'PLUS_10') {
+        targetPrice = P_base + Math.round(0.10 * P_base);
+      } else if (action === 'PLUS_125') {
+        targetPrice = P_base + 125;
+      } else if (action === 'PLUS_50') {
+        targetPrice = P_base + Math.round(0.50 * P_base);
+      } else {
+        return reply.status(400).send({ error: 'Неизвестное действие торга' });
+      }
+
+      const evaluation = evaluateBargain(P_base, action, { k, customPrice: targetPrice });
+
+      if (evaluation.isOutrage) {
+        await tx
+          .update(schema.avitaDeals)
+          .set({
+            attempt_count: k,
+            action_type: action,
+            requested_price: targetPrice,
+            final_price: P_base,
+          })
+          .where(eq(schema.avitaDeals.id, deal.id));
+
+        const canBargain = k < 3;
+        return reply.send({
+          status: 'OUTRAGE',
+          isOutrage: true,
+          initialPrice: deal.initial_price,
+          offeredPrice: P_base,
+          finalPrice: P_base,
+          attemptCount: k,
+          maxAttempts: 3,
+          canBargain,
+          message: evaluation.message,
+          dealId: deal.id,
+        });
+      }
 
       if (evaluation.isAccepted) {
-        const finalPrice = evaluation.finalPrice;
+        const finalPrice = targetPrice;
 
         const userRecords = await tx
           .select()
@@ -270,8 +345,9 @@ export async function avitaRoutes(fastify: FastifyInstance) {
         await tx
           .update(schema.avitaDeals)
           .set({
+            attempt_count: k,
             action_type: action,
-            requested_price: evaluation.requestedPrice,
+            requested_price: targetPrice,
             final_price: finalPrice,
             status: 'ACCEPTED',
             closed_at: new Date(),
@@ -301,23 +377,34 @@ export async function avitaRoutes(fastify: FastifyInstance) {
           newBalance,
           message: evaluation.message,
           soldItem: currentItem,
+          attemptCount: k,
+          maxAttempts: 3,
         });
       }
 
       // Bargain rejected or compromise offered
+      const newOfferedPrice = evaluation.isCompromise ? evaluation.finalPrice : P_base;
+
       await tx
         .update(schema.avitaDeals)
         .set({
+          attempt_count: k,
           action_type: action,
-          requested_price: evaluation.requestedPrice,
-          final_price: evaluation.finalPrice,
+          requested_price: targetPrice,
+          final_price: newOfferedPrice,
         })
         .where(eq(schema.avitaDeals.id, deal.id));
 
+      const canBargain = k < 3;
       return reply.send({
         status: evaluation.isCompromise ? 'COMPROMISE' : 'REJECTED',
+        isCompromise: evaluation.isCompromise,
         initialPrice: deal.initial_price,
-        offeredPrice: evaluation.finalPrice,
+        offeredPrice: newOfferedPrice,
+        finalPrice: newOfferedPrice,
+        attemptCount: k,
+        maxAttempts: 3,
+        canBargain,
         message: evaluation.message,
         canAcceptOffered: true,
         dealId: deal.id,

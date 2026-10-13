@@ -162,7 +162,7 @@ describe('API Integration Tests', () => {
     expect(negBody.finalPrice).toBe(quoteBody.deal.initial_price);
   });
 
-  it('rejects duplicate bargaining on the same deal', async () => {
+  it('supports custom price negotiation, triggers outrage on absurd prices, and enforces 3-attempt limit', async () => {
     // Drop item
     const dropRes = await app.inject({
       method: 'POST',
@@ -178,29 +178,140 @@ describe('API Integration Tests', () => {
       headers: authHeaders,
       payload: { itemId: item.id },
     });
-    const dealId = quoteRes.json().deal.id;
+    const deal = quoteRes.json().deal;
+    const dealId = deal.id;
+    const initialPrice = deal.initial_price;
 
-    // First bargain request: +10%
-    await app.inject({
+    // Attempt 1: Absurd custom price (> 2.5 * P_base) -> Outrage!
+    const outrageRes = await app.inject({
       method: 'POST',
       url: '/api/avita/negotiate',
       headers: authHeaders,
-      payload: { dealId, action: 'PLUS_10' },
+      payload: {
+        dealId,
+        action: 'CUSTOM',
+        customPrice: Math.round(initialPrice * 3),
+      },
     });
+    expect(outrageRes.statusCode).toBe(200);
+    const outrageBody = outrageRes.json();
+    expect(outrageBody.isOutrage).toBe(true);
+    expect(outrageBody.status).toBe('OUTRAGE');
+    expect(outrageBody.attemptCount).toBe(1);
+    expect(outrageBody.canBargain).toBe(true);
+    expect(outrageBody.message).toContain('Ты надо мной издеваешься');
 
-    // Second bargain attempt: should be blocked
-    const repeatBargain = await app.inject({
+    // Attempt 2: Another outrage burns round 2
+    const attempt2Res = await app.inject({
       method: 'POST',
       url: '/api/avita/negotiate',
       headers: authHeaders,
-      payload: { dealId, action: 'PLUS_50' },
+      payload: {
+        dealId,
+        action: 'CUSTOM',
+        customPrice: Math.round(initialPrice * 2.8),
+      },
     });
+    expect(attempt2Res.statusCode).toBe(200);
+    expect(attempt2Res.json().attemptCount).toBe(2);
+    expect(attempt2Res.json().canBargain).toBe(true);
 
-    expect(repeatBargain.statusCode).toBe(400);
-    expect([
-      'Сделка уже закрыта или отменена',
-      'Повторный торг в рамках одной сделки запрещен правилами Авиты',
-    ]).toContain(repeatBargain.json().error);
+    // Attempt 3: Outrage burns round 3 -> locks bargaining
+    const attempt3Res = await app.inject({
+      method: 'POST',
+      url: '/api/avita/negotiate',
+      headers: authHeaders,
+      payload: {
+        dealId,
+        action: 'CUSTOM',
+        customPrice: Math.round(initialPrice * 2.9),
+      },
+    });
+    expect(attempt3Res.statusCode).toBe(200);
+    expect(attempt3Res.json().attemptCount).toBe(3);
+    expect(attempt3Res.json().canBargain).toBe(false);
+
+    // Attempt 4: Should be blocked by 3-attempt limit!
+    const attempt4Res = await app.inject({
+      method: 'POST',
+      url: '/api/avita/negotiate',
+      headers: authHeaders,
+      payload: {
+        dealId,
+        action: 'PLUS_10',
+      },
+    });
+    expect(attempt4Res.statusCode).toBe(400);
+    expect(attempt4Res.json().error).toContain('Лимит попыток торга исчерпан');
+
+    // Final accept after limit reached
+    const acceptFinalRes = await app.inject({
+      method: 'POST',
+      url: '/api/avita/negotiate',
+      headers: authHeaders,
+      payload: { dealId, action: 'ACCEPT' },
+    });
+    expect(acceptFinalRes.statusCode).toBe(200);
+    expect(acceptFinalRes.json().status).toBe('ACCEPTED');
+  });
+
+  it('validates custom price input and guards against invalid/infinite/sub-floor values', async () => {
+    const dropRes = await app.inject({
+      method: 'POST',
+      url: '/api/drop/roll',
+      headers: authHeaders,
+    });
+    const item = dropRes.json().item;
+
+    const quoteRes = await app.inject({
+      method: 'POST',
+      url: '/api/avita/quote',
+      headers: authHeaders,
+      payload: { itemId: item.id },
+    });
+    const deal = quoteRes.json().deal;
+    const dealId = deal.id;
+    const initialPrice = deal.initial_price;
+
+    // Sub-floor price
+    const lowRes = await app.inject({
+      method: 'POST',
+      url: '/api/avita/negotiate',
+      headers: authHeaders,
+      payload: { dealId, action: 'CUSTOM', customPrice: initialPrice },
+    });
+    expect(lowRes.statusCode).toBe(400);
+    expect(lowRes.json().error).toContain('больше текущей');
+
+    // Negative price
+    const negPriceRes = await app.inject({
+      method: 'POST',
+      url: '/api/avita/negotiate',
+      headers: authHeaders,
+      payload: { dealId, action: 'CUSTOM', customPrice: -100 },
+    });
+    expect(negPriceRes.statusCode).toBe(400);
+
+    // Value exceeding limit
+    const hugeRes = await app.inject({
+      method: 'POST',
+      url: '/api/avita/negotiate',
+      headers: authHeaders,
+      payload: { dealId, action: 'CUSTOM', customPrice: 2_000_000_000 },
+    });
+    expect(hugeRes.statusCode).toBe(400);
+
+    // Verify GET /active-deal
+    const activeRes = await app.inject({
+      method: 'GET',
+      url: '/api/avita/active-deal',
+      headers: authHeaders,
+    });
+    expect(activeRes.statusCode).toBe(200);
+    const activeData = activeRes.json().activeDeal;
+    expect(activeData.attemptCount).toBe(0);
+    expect(activeData.canBargain).toBe(true);
+    expect(activeData.currentPrice).toBe(initialPrice);
   });
 
   it('blocks drop roll when balance < 500 UD and reports missing UD', async () => {

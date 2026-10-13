@@ -10,6 +10,7 @@ import {
   Square,
   Layers,
   Coins,
+  Send,
 } from 'lucide-react';
 import { api, AvitaDeal, NicknameItem } from '../api/client.js';
 import { PlainTextNickname } from '../components/PlainTextNickname.js';
@@ -48,6 +49,12 @@ export const AvitaScreen: React.FC<AvitaScreenProps> = ({
 
   // Interactive dialogue messages history
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [customPriceInput, setCustomPriceInput] = useState<string>('');
+  const messagesEndRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   const loadData = async () => {
     try {
@@ -86,6 +93,7 @@ export const AvitaScreen: React.FC<AvitaScreenProps> = ({
     if (!item) return;
     const initialPrice = deal.initial_price;
     const finalPrice = deal.final_price;
+    const isLocked = !deal.canBargain || (deal.attemptCount ?? deal.attempt_count ?? 0) >= 3;
 
     const msgs: ChatMessage[] = [
       {
@@ -98,7 +106,9 @@ export const AvitaScreen: React.FC<AvitaScreenProps> = ({
       {
         id: 'msg-2',
         sender: 'avita',
-        text: finalPrice
+        text: isLocked
+          ? `Это моё окончательное слово: ${finalPrice || initialPrice} UD. Забираешь или уходишь?`
+          : finalPrice
           ? `Я уже сделал встречное предложение: ${finalPrice} UD. Берёшь или уходишь?`
           : `Хм-м... @${item.nickname.replace(/^@/, '')}? ${
               item.rarity === 'MYTHIC' || item.rarity === 'LEGENDARY'
@@ -129,7 +139,7 @@ export const AvitaScreen: React.FC<AvitaScreenProps> = ({
     }
   };
 
-  const handleNegotiate = async (action: string, playerPhrase: string) => {
+  const handleNegotiate = async (action: string, playerPhrase: string, customPriceVal?: number) => {
     if (!activeDeal || submitting) return;
     setSubmitting(true);
     haptic.impact('medium');
@@ -139,12 +149,13 @@ export const AvitaScreen: React.FC<AvitaScreenProps> = ({
       id: `p-${Date.now()}`,
       sender: 'player',
       text: playerPhrase,
+      priceTag: customPriceVal,
       time: formatTime(),
     };
     setMessages((prev) => [...prev, playerMsg]);
 
     try {
-      const res = await api.negotiateDeal(activeDeal.id, action);
+      const res = await api.negotiateDeal(activeDeal.id, action, customPriceVal);
 
       if (res.status === 'ACCEPTED') {
         haptic.notification('success');
@@ -164,8 +175,37 @@ export const AvitaScreen: React.FC<AvitaScreenProps> = ({
           const updated = await api.getCollection();
           setCollection(updated.items);
         }, 1800);
+      } else if (res.status === 'OUTRAGE' || res.isOutrage) {
+        haptic.notification('warning');
+        const avitaReply: ChatMessage = {
+          id: `a-${Date.now()}`,
+          sender: 'avita',
+          text: res.message,
+          priceTag: res.offeredPrice || (activeDeal.final_price || activeDeal.initial_price),
+          time: formatTime(),
+        };
+        setMessages((prev) => [...prev, avitaReply]);
+
+        setActiveDeal((prev) =>
+          prev
+            ? {
+                ...prev,
+                action_type: action,
+                final_price: res.offeredPrice || prev.final_price || prev.initial_price,
+                attemptCount: res.attemptCount,
+                attempt_count: res.attemptCount,
+                canBargain: res.canBargain,
+              }
+            : null
+        );
       } else {
         // Counter offer / reject
+        if (res.isCompromise) {
+          haptic.impact('light');
+        } else {
+          haptic.notification('warning');
+        }
+
         const avitaReply: ChatMessage = {
           id: `a-${Date.now()}`,
           sender: 'avita',
@@ -180,17 +220,36 @@ export const AvitaScreen: React.FC<AvitaScreenProps> = ({
             ? {
                 ...prev,
                 action_type: action,
-                final_price: res.offeredPrice || prev.initial_price,
-                canBargain: false,
+                final_price: res.offeredPrice || prev.final_price || prev.initial_price,
+                attemptCount: res.attemptCount,
+                attempt_count: res.attemptCount,
+                canBargain: res.canBargain,
               }
             : null
         );
       }
     } catch (err: any) {
       haptic.notification('error');
+      const avitaErrorReply: ChatMessage = {
+        id: `err-${Date.now()}`,
+        sender: 'avita',
+        text: err.message || 'Что-то пошло не так при ответе. Попробуй ещё раз.',
+        time: formatTime(),
+      };
+      setMessages((prev) => [...prev, avitaErrorReply]);
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleCustomPriceSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeDeal || submitting || !customPriceInput) return;
+    const val = Math.round(Number(customPriceInput.trim()));
+    const currentBase = activeDeal.final_price || activeDeal.initial_price;
+    if (!Number.isFinite(val) || isNaN(val) || val <= currentBase) return;
+    setCustomPriceInput('');
+    handleNegotiate('CUSTOM', `Предлагаю свою цену: ${val} UD!`, val);
   };
 
   const handleAcceptOffered = async () => {
@@ -367,9 +426,14 @@ export const AvitaScreen: React.FC<AvitaScreenProps> = ({
       {activeDeal && activeDeal.item ? (
         <div className="flex flex-col gap-3 bg-slate-900/70 border border-slate-800/80 rounded-3xl p-4 animate-in fade-in zoom-in-95">
           <div className="flex items-center justify-between border-b border-slate-800/80 pb-2.5">
-            <div className="flex items-center gap-1.5 text-xs text-amber-400 font-bold">
-              <MessageSquare className="w-4 h-4" />
-              <span>Диалог переговоров</span>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 text-xs text-amber-400 font-bold">
+                <MessageSquare className="w-4 h-4" />
+                <span>Диалог</span>
+              </div>
+              <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-sky-300">
+                Раунд торга: {activeDeal.canBargain ? Math.min(3, (activeDeal.attemptCount ?? activeDeal.attempt_count ?? 0) + 1) : 3} / 3
+              </span>
             </div>
             <button
               onClick={handleCancel}
@@ -421,85 +485,119 @@ export const AvitaScreen: React.FC<AvitaScreenProps> = ({
                 </div>
               );
             })}
+            <div ref={messagesEndRef} />
           </div>
 
-          {/* Player Reply Action Buttons (Written as speech quotes) */}
+          {/* Player Reply Action Buttons & Chat Input */}
           {activeDeal.canBargain ? (
-            <div className="flex flex-col gap-1.5 pt-2 border-t border-slate-800/80">
-              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-0.5">
-                Ваш ответ:
+            <div className="flex flex-col gap-2 pt-2 border-t border-slate-800/80">
+              <div className="flex items-center justify-between text-[11px] font-semibold text-slate-400">
+                <span>Ваш ответ (раунд {Math.min(3, (activeDeal.attemptCount ?? activeDeal.attempt_count ?? 0) + 1)} / 3):</span>
               </div>
 
-              {/* Option 1: Accept */}
+              {/* Immediate Accept */}
               <button
                 onClick={() =>
                   handleNegotiate(
                     'ACCEPT',
-                    `По рукам, Авита! Забирай за ${activeDeal.initial_price} UD.`
+                    `По рукам, Авита! Забирай за ${activeDeal.final_price || activeDeal.initial_price} UD.`
                   )
                 }
                 disabled={submitting}
-                className="w-full text-left py-2.5 px-3 rounded-xl bg-emerald-600/90 hover:bg-emerald-500 text-white font-medium text-xs active:scale-98 transition-all flex items-center justify-between"
+                className="w-full text-left py-2.5 px-3 rounded-xl bg-emerald-600/90 hover:bg-emerald-500 text-white font-medium text-xs active:scale-98 transition-all flex items-center justify-between shadow-sm"
               >
                 <span>💬 «По рукам, забирай!»</span>
-                <span className="font-mono font-black">{activeDeal.initial_price} UD</span>
+                <span className="font-mono font-black">{activeDeal.final_price || activeDeal.initial_price} UD</span>
               </button>
 
-              {/* Option 2: +10% */}
-              <button
-                onClick={() =>
-                  handleNegotiate(
-                    'PLUS_10',
-                    `Маловато за такой ник! Накинь хотя бы 10% (запрос: ${Math.round(
-                      activeDeal.initial_price * 1.1
-                    )} UD).`
-                  )
-                }
-                disabled={submitting}
-                className="w-full text-left py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 font-medium text-xs active:scale-98 transition-all flex items-center justify-between border border-slate-700/50"
-              >
-                <span>💬 «Накинь 10%, ник стоящий»</span>
-                <span className="font-mono text-sky-400">
-                  +{Math.round(activeDeal.initial_price * 0.1)} UD
-                </span>
-              </button>
+              {/* Quick Quote Buttons (+10%, +125 UD, +50%) */}
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  onClick={() => {
+                    const base = activeDeal.final_price || activeDeal.initial_price;
+                    const delta = Math.round(base * 0.1);
+                    handleNegotiate(
+                      'PLUS_10',
+                      `Маловато за такой ник! Накинь хотя бы 10% (запрос: ${base + delta} UD).`
+                    );
+                  }}
+                  disabled={submitting}
+                  className="py-2 px-1 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 font-medium text-[11px] active:scale-95 transition-all flex flex-col items-center justify-center border border-slate-700/50"
+                >
+                  <span className="text-slate-300 font-semibold">+10%</span>
+                  <span className="font-mono text-[10px] text-sky-400">
+                    +{Math.round((activeDeal.final_price || activeDeal.initial_price) * 0.1)} UD
+                  </span>
+                </button>
 
-              {/* Option 3: +125 UD */}
-              <button
-                onClick={() =>
-                  handleNegotiate(
-                    'PLUS_125',
-                    `Слушай, накинь 125 UD чисто на чай (${activeDeal.initial_price + 125} UD), и договорились.`
-                  )
-                }
-                disabled={submitting}
-                className="w-full text-left py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 font-medium text-xs active:scale-98 transition-all flex items-center justify-between border border-slate-700/50"
-              >
-                <span>💬 «Добавь 125 UD на чай»</span>
-                <span className="font-mono text-sky-400">+125 UD</span>
-              </button>
+                <button
+                  onClick={() => {
+                    const base = activeDeal.final_price || activeDeal.initial_price;
+                    handleNegotiate(
+                      'PLUS_125',
+                      `Слушай, накинь 125 UD чисто на чай (${base + 125} UD), и договорились.`
+                    );
+                  }}
+                  disabled={submitting}
+                  className="py-2 px-1 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 font-medium text-[11px] active:scale-95 transition-all flex flex-col items-center justify-center border border-slate-700/50"
+                >
+                  <span className="text-slate-300 font-semibold">+125 UD</span>
+                  <span className="font-mono text-[10px] text-sky-400">+125 UD</span>
+                </button>
 
-              {/* Option 4: +50% */}
-              <button
-                onClick={() =>
-                  handleNegotiate(
-                    'PLUS_50',
-                    `Ты шутишь? Этот ник редкий и стоит на 50% дороже (${Math.round(
-                      activeDeal.initial_price * 1.5
-                    )} UD)!`
-                  )
-                }
-                disabled={submitting}
-                className="w-full text-left py-2.5 px-3 rounded-xl bg-amber-600/80 hover:bg-amber-500 text-white font-medium text-xs active:scale-98 transition-all flex items-center justify-between"
+                <button
+                  onClick={() => {
+                    const base = activeDeal.final_price || activeDeal.initial_price;
+                    const delta = Math.round(base * 0.5);
+                    handleNegotiate(
+                      'PLUS_50',
+                      `Ты шутишь? Этот ник редкий и стоит на 50% дороже (${base + delta} UD)!`
+                    );
+                  }}
+                  disabled={submitting}
+                  className="py-2 px-1 rounded-xl bg-amber-600/30 hover:bg-amber-600/40 text-amber-200 font-medium text-[11px] active:scale-95 transition-all flex flex-col items-center justify-center border border-amber-500/40"
+                >
+                  <span className="text-amber-300 font-semibold">+50%</span>
+                  <span className="font-mono text-[10px] text-amber-400">
+                    +{Math.round((activeDeal.final_price || activeDeal.initial_price) * 0.5)} UD
+                  </span>
+                </button>
+              </div>
+
+              {/* Messenger-style chat input bar with Send button */}
+              <form
+                onSubmit={handleCustomPriceSubmit}
+                className="flex items-center gap-1.5 bg-slate-950/80 border border-slate-700/80 rounded-xl p-1 focus-within:border-sky-500 transition-colors"
               >
-                <span>💬 «Требую +50% к цене!»</span>
-                <span className="font-mono font-bold">
-                  +{Math.round(activeDeal.initial_price * 0.5)} UD
-                </span>
-              </button>
+                <span className="text-[11px] font-mono font-bold text-amber-400 pl-2">UD</span>
+                <input
+                  type="number"
+                  value={customPriceInput}
+                  onChange={(e) => setCustomPriceInput(e.target.value)}
+                  placeholder={`Своя цена (> ${activeDeal.final_price || activeDeal.initial_price})...`}
+                  min={(activeDeal.final_price || activeDeal.initial_price) + 1}
+                  disabled={submitting}
+                  className="flex-1 bg-transparent text-xs font-mono text-slate-100 placeholder:text-slate-500 focus:outline-none px-1 py-1"
+                />
+                <button
+                  type="submit"
+                  disabled={
+                    submitting ||
+                    !customPriceInput ||
+                    Number(customPriceInput) <= (activeDeal.final_price || activeDeal.initial_price)
+                  }
+                  className="px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:hover:bg-sky-500 text-white font-bold text-xs flex items-center gap-1 shrink-0 active:scale-95 transition-all shadow-sm"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>Отправить</span>
+                </button>
+              </form>
             </div>
           ) : (
             <div className="flex flex-col gap-2 pt-2 border-t border-slate-800/80">
+              <div className="bg-amber-950/30 border border-amber-600/30 rounded-xl p-2 text-center text-xs text-amber-300 font-medium">
+                Раунды торга исчерпаны (3 / 3). Авита ждёт решения:
+              </div>
               <button
                 onClick={handleAcceptOffered}
                 disabled={submitting}

@@ -57,9 +57,12 @@ CREATE TABLE IF NOT EXISTS avita_deals (
   requested_price INT,
   final_price INT,
   status VARCHAR(16) NOT NULL,
+  attempt_count INT NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   closed_at TIMESTAMPTZ
 );
+
+ALTER TABLE avita_deals ADD COLUMN IF NOT EXISTS attempt_count INT NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS leaderboard_showcases (
   user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,

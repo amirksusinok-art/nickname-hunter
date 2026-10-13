@@ -60,9 +60,13 @@ export interface AvitaDeal {
   requested_price: number | null;
   final_price: number | null;
   status: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'CANCELLED';
+  attempt_count?: number;
+  attemptCount?: number;
+  maxAttempts?: number;
+  currentPrice?: number;
   item?: NicknameItem;
   canBargain?: boolean;
-  options?: Array<{ action: string; label: string; delta: number }>;
+  options?: Array<{ action: string; label: string; delta: number; price?: number }>;
 }
 
 export interface LeaderboardEntry {
@@ -156,7 +160,7 @@ export const api = {
       body: JSON.stringify({ itemId }),
     }),
 
-  negotiateDeal: (dealId: string, action: string) =>
+  negotiateDeal: (dealId: string, action: string, customPrice?: number) =>
     request<{
       status: string;
       finalPrice?: number;
@@ -166,9 +170,14 @@ export const api = {
       offeredPrice?: number;
       canAcceptOffered?: boolean;
       dealId?: string;
+      attemptCount?: number;
+      maxAttempts?: number;
+      canBargain?: boolean;
+      isOutrage?: boolean;
+      isCompromise?: boolean;
     }>('/avita/negotiate', {
       method: 'POST',
-      body: JSON.stringify({ dealId, action }),
+      body: JSON.stringify({ dealId, action, customPrice }),
     }),
 
   acceptCounterOffer: (dealId: string) =>
